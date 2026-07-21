@@ -80,7 +80,6 @@ from typing import Optional
 
 # pyrefly: ignore [missing-import]
 from pydantic import BaseModel, ConfigDict
-from app.models.activity import ActivityType
 
 
 class ActivityBase(BaseModel):

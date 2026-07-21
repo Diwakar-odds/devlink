@@ -15,7 +15,6 @@ from app.schemas.notification import (
     NotificationUpdate,
 )
 
-from app.schemas.notification import NotificationCreate
 
 
 class NotificationService:
