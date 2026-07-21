@@ -1,7 +1,6 @@
 from contextlib import asynccontextmanager
 
 # pyrefly: ignore [missing-import]
-from fastapi.routing import APIRoute
 
 # pyrefly: ignore [missing-import]
 from fastapi import FastAPI
@@ -45,6 +44,7 @@ from app.routers import (
     repositories,
     skills,
     users,
+    ws_chat,
 )
 
 
@@ -196,3 +196,4 @@ app.include_router(applications.router)
 app.include_router(skills.router)
 app.include_router(recommendations.router)
 app.include_router(health.router)
+app.include_router(ws_chat.router, prefix="/api/ws")

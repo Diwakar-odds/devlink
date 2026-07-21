@@ -18,7 +18,7 @@ function wsUrl(): string {
   if (!isBackendConfigured()) return "";
   const base = API_BASE_URL.replace(/^http/, "ws");
   const token = tokenStore.getAccess();
-  return `${base}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  return `${base}/api/ws/chat${token ? `?token=${encodeURIComponent(token)}` : ""}`;
 }
 
 class WsClient {

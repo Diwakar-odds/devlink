@@ -1,12 +1,14 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { messagesService } from "@/services";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { messagesService, userService } from "@/services";
 import { Card, Avatar } from "@/components/shared/primitives";
 import { LoadingButton } from "@/components/shared/LoadingButton";
-import { ArrowLeft, Send } from "lucide-react";
-import { useState, useCallback } from "react";
+import { ArrowLeft, Send, Paperclip } from "lucide-react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { builders, conversations } from "@/mocks/seed";
 import { cn } from "@/lib/utils";
+import { ws, WsEvent } from "@/api/ws";
+import { API_BASE_URL } from "@/api/client";
 
 export const Route = createFileRoute("/_app/messages/$conversationId")({
   head: () => ({ meta: [{ title: "Chat — DevLink" }] }),
@@ -20,26 +22,95 @@ function Thread() {
     existingConversation?.with ?? builders.find((builder) => builder.id === conversationId);
   const conv =
     existingConversation ?? (contact ? { id: conversationId, with: contact } : conversations[0]);
+  const queryClient = useQueryClient();
+  const { data: me } = useQuery({
+    queryKey: ["me"],
+    queryFn: () => userService.me(),
+  });
   const { data = [] } = useQuery({
     queryKey: ["thread", conversationId],
     queryFn: () => messagesService.thread(conversationId),
   });
+  
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Scroll to bottom
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [data, typing]);
+
+  useEffect(() => {
+    // Mark as read
+    messagesService.markRead(conversationId).catch(() => {});
+    
+    const unsubscribe = ws.on((ev: WsEvent) => {
+      if (ev.type === "message.new" && ev.data.conversation_id === conversationId) {
+        queryClient.invalidateQueries({ queryKey: ["thread", conversationId] });
+        messagesService.markRead(conversationId).catch(() => {});
+      } else if (ev.type === "typing" && ev.data.conversation_id === conversationId) {
+        setTyping(ev.data.is_typing);
+      }
+    });
+    return unsubscribe;
+  }, [conversationId, queryClient]);
+
+  const handleTyping = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setText(e.target.value);
+    ws.send({ type: "typing", data: { conversation_id: conversationId, is_typing: true } });
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      ws.send({ type: "typing", data: { conversation_id: conversationId, is_typing: false } });
+    }, 2000);
+  };
+
+  const sendMutation = useMutation({
+    mutationFn: (args: { text: string; attachment?: string }) =>
+      messagesService.send({
+        conversation_id: conversationId,
+        message: args.text,
+        attachment: args.attachment,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["thread", conversationId] });
+      ws.send({ type: "typing", data: { conversation_id: conversationId, is_typing: false } });
+      setText("");
+    },
+  });
 
   const handleSend = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      if (!text.trim() || submitting) return;
+      if (!text.trim() && !fileInputRef.current?.files?.length) return;
       setSubmitting(true);
       try {
-        await new Promise((r) => setTimeout(r, 400));
-        setText("");
+        let attachmentUrl = undefined;
+        const file = fileInputRef.current?.files?.[0];
+        if (file) {
+          const formData = new FormData();
+          formData.append("file", file);
+          const res = await fetch(`${API_BASE_URL}/api/messages/upload`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${localStorage.getItem("devlink.access") || sessionStorage.getItem("devlink.access")}`,
+            },
+            body: formData,
+          });
+          const data = await res.json();
+          attachmentUrl = data.url;
+        }
+        await sendMutation.mutateAsync({ text, attachment: attachmentUrl });
+        if (fileInputRef.current) fileInputRef.current.value = "";
       } finally {
         setSubmitting(false);
       }
     },
-    [text, submitting],
+    [text, conversationId, sendMutation],
   );
 
   return (
@@ -105,24 +176,39 @@ function Thread() {
                     : "border border-border bg-surface text-foreground",
                 )}
               >
-                <p>{m.text}</p>
+                <p>{m.text || m.content}</p>
+                {(m.attachment || m.attachment_url) && (
+                  <img src={m.attachment || m.attachment_url} className="mt-2 rounded-md max-w-[200px]" alt="attachment" />
+                )}
                 <p
                   className={cn(
                     "mt-1 text-[10px]",
-                    m.from === "me" ? "text-primary-foreground/70" : "text-muted-foreground",
+                    m.from === "me" || (m.sender_id && m.sender_id === me?.id) ? "text-primary-foreground/70" : "text-muted-foreground",
                   )}
                 >
-                  {m.at}
+                  {m.at || new Date(m.created_at).toLocaleTimeString()}
                 </p>
               </div>
             </div>
           ))}
+          {typing && (
+            <div className="flex justify-start">
+              <div className="rounded-md border border-border bg-surface px-3 py-2 text-[13px] text-muted-foreground">
+                <p className="animate-pulse">Typing...</p>
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
         </div>
 
         <form onSubmit={handleSend} className="flex items-center gap-2 border-t border-border p-3">
+          <label className="cursor-pointer text-muted-foreground hover:text-foreground">
+            <Paperclip size={18} />
+            <input type="file" ref={fileInputRef} className="hidden" accept="image/*,.pdf,.doc,.docx" />
+          </label>
           <input
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={handleTyping}
             placeholder="Type a message…"
             className="min-w-0 flex-1 rounded-md border border-border bg-surface px-3 py-2 text-[13px] outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
           />
@@ -130,7 +216,7 @@ function Thread() {
             type="submit"
             loading={submitting}
             loadingText=""
-            disabled={!text.trim()}
+            disabled={!text.trim() && !fileInputRef.current?.files?.length}
             className="inline-flex items-center gap-1"
           >
             <Send size={14} /> Send
